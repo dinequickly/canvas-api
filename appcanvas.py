@@ -289,7 +289,17 @@ def dump_get_async(
         "course_id": course_id,
         "message": f"Job started. Check status at GET /status/{job_id}"
     }
-
+@app.get("/dump/smart")
+def dump_smart(
+    course_id: int = Query(..., gt=0),
+    auth=require_api_key
+):
+    """Smart sync - extracts text from PDFs/slides, skips videos."""
+    try:
+        return dump_course_smart(course_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
 @app.post("/dump/async")
 def dump_post_async(
     body: DumpBody,
