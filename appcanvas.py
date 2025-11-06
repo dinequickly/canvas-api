@@ -8,6 +8,105 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException, Query, Header, BackgroundTasks
 from pydantic import BaseModel
 from typing import Dict, Optional
+from PyPDF2 import PdfReader
+from pptx import Presentation
+from docx import Document
+import io
+
+STUDY_FILE_TYPES = {'pdf', 'pptx', 'ppt', 'docx', 'doc'}
+VIDEO_FILE_TYPES = {'mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm'}
+
+def extract_text_from_file(file_url: str, file_type: str) -> str:
+    """Download and extract text from study materials."""
+    try:
+        response = requests.get(file_url, headers=headers, timeout=60)
+        file_bytes = io.BytesIO(response.content)
+        
+        if file_type == 'pdf':
+            reader = PdfReader(file_bytes)
+            text = "\n".join(page.extract_text() for page in reader.pages)
+            return text
+        
+        elif file_type in ['pptx', 'ppt']:
+            prs = Presentation(file_bytes)
+            text = []
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        text.append(shape.text)
+            return "\n".join(text)
+        
+        elif file_type in ['docx', 'doc']:
+            doc = Document(file_bytes)
+            text = "\n".join(para.text for para in doc.paragraphs)
+            return text
+        
+        return ""
+    except Exception as e:
+        logging.error(f"Could not extract text from {file_url}: {e}")
+        return ""
+
+def dump_course_smart(course_id: int) -> dict:
+    """Smart sync - extracts text from PDFs/slides, skips videos."""
+    course = _get(f"{CANVAS}courses/{course_id}")
+    
+    modules_url = f"{CANVAS}courses/{course_id}/modules"
+    modules = _get(modules_url, include=["items"])
+    
+    result = {
+        "course_id": course_id,
+        "course_name": course.get("name"),
+        "modules": []
+    }
+    
+    for module in modules:
+        module_data = {
+            "module_id": module["id"],
+            "module_name": module["name"],
+            "items": []
+        }
+        
+        items_url = f"{CANVAS}courses/{course_id}/modules/{module['id']}/items"
+        items = _get(items_url)
+        
+        for item in items:
+            item_data = {
+                "item_id": item["id"],
+                "title": item["title"],
+                "type": item["type"],
+                "url": item.get("url"),
+                "html_url": item.get("html_url"),
+                "content": None
+            }
+            
+            if item["type"] == "Page" and "url" in item:
+                page = _get(item["url"])
+                item_data["content"] = page.get("body")
+            
+            elif item["type"] == "Assignment" and "content_id" in item:
+                assignment = _get(f"{CANVAS}courses/{course_id}/assignments/{item['content_id']}")
+                item_data["content"] = assignment.get("description")
+            
+            elif item["type"] == "File" and "content_id" in item:
+                file_info = _get(f"{CANVAS}files/{item['content_id']}")
+                filename = file_info.get("filename", "")
+                file_extension = filename.split(".")[-1].lower()
+                
+                item_data["file_url"] = file_info.get("url")
+                item_data["filename"] = filename
+                
+                if file_extension in STUDY_FILE_TYPES:
+                    logging.info(f"Extracting text from {filename}")
+                    item_data["content"] = extract_text_from_file(file_info.get("url"), file_extension)
+                elif file_extension in VIDEO_FILE_TYPES:
+                    logging.info(f"Skipping video: {filename}")
+                    item_data["content"] = f"[Video: {filename}]"
+            
+            module_data["items"].append(item_data)
+        
+        result["modules"].append(module_data)
+    
+    return result
 
 # Make the canvas_dump repo importable
 # Adjust this path if your repo lives elsewhere.
